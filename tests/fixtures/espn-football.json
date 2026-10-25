@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "name": "Indiana Hoosiers at Michigan Wolverines",
+      "shortName": "IU @ MICH",
+      "competitions": [{
+        "broadcasts": [{"names": ["Fox"]}],
+        "competitors": [
+          {"homeAway":"home","winner":false,"score":"6","team":{"location":"Michigan","shortDisplayName":"Michigan","abbreviation":"MICH"},"curatedRank":{"current":99}},
+          {"homeAway":"away","winner":true,"score":"13","team":{"location":"Indiana","shortDisplayName":"Indiana","abbreviation":"IU"},"curatedRank":{"current":6}}
+        ]
+      }],
+      "status":{"type":{"state":"post","shortDetail":"Final/OT"}}
+    },
+    {
+      "name": "Michigan State Spartans at UCLA Bruins",
+      "shortName": "MSU @ UCLA",
+      "competitions": [{
+        "broadcasts": [{"names": ["CBS"]}],
+        "competitors": [
+          {"homeAway":"home","score":"21","team":{"location":"UCLA","shortDisplayName":"UCLA","abbreviation":"UCLA"},"curatedRank":{"current":9}},
+          {"homeAway":"away","score":"7","team":{"location":"Michigan State","shortDisplayName":"Michigan St","abbreviation":"MSU"},"curatedRank":{"current":99}}
+        ]
+      }],
+      "status":{"type":{"state":"in","shortDetail":"7:49 - 3rd"}}
+    }
+  ]
+}

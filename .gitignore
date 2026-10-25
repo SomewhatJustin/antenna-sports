@@ -1,0 +1,12 @@
+/target/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+.DS_Store
+.idea/
+.vscode/

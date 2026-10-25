@@ -1,0 +1,15 @@
+[Unit]
+Description=Antenna Sports dashboard
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=%h/.local/bin/antenna-sports
+Environment=RUST_LOG=antenna_sports=info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
