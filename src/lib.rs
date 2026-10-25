@@ -127,7 +127,13 @@ pub fn parse_schedule(html: &str) -> Result<Vec<Program>> {
         anyhow::bail!("schedule response did not contain any schedule rows");
     }
 
-    programs.sort_by_key(|program| (program.start_minutes, program.network.clone()));
+    programs.sort_by_key(|program| {
+        (
+            program.start_minutes,
+            program.network.clone(),
+            program.title.clone(),
+        )
+    });
     programs.dedup_by(|left, right| {
         left.network == right.network
             && left.title == right.title
@@ -371,7 +377,11 @@ pub fn merge_adjacent_programs(mut programs: Vec<Program>) -> Vec<Program> {
         if let Some(existing) = merged.iter_mut().rev().find(|candidate| {
             candidate.network == program.network
                 && candidate.title == program.title
-                && candidate.end_minutes == program.start_minutes
+                && candidate.start_minutes <= program.start_minutes
+                && candidate.end_minutes >= program.start_minutes
+                && (candidate.airing_id.is_none()
+                    || program.airing_id.is_none()
+                    || candidate.airing_id == program.airing_id)
         }) {
             existing.end_minutes = existing.end_minutes.max(program.end_minutes);
         } else {
@@ -425,56 +435,17 @@ pub fn classify_sports(mut programs: Vec<Program>, now_minutes: i32) -> SportsVi
     }
 }
 
-pub fn sports_view_from_games(games: Vec<FootballGame>, now_minutes: i32) -> SportsView {
-    let mut live = Vec::new();
-    let mut recent = Vec::new();
-    let mut upcoming = Vec::new();
-
-    for game in games {
-        let Some((station, channel)) = ota_station(&game.network) else {
-            continue;
-        };
-        if game.sport != "football" && game.sport != "baseball" {
-            continue;
-        }
-
-        let title = format!("{} at {}", game.away.name, game.home.name);
-        let state = game.state.clone();
-        let program = Program {
-            network: game.network.clone(),
-            station: station.to_string(),
-            channel: channel.to_string(),
-            title,
-            start_minutes: now_minutes,
-            end_minutes: now_minutes + 1,
-            detail_url: None,
-            airing_id: None,
-            score: Some(game),
-        };
-
-        match state.as_str() {
-            "in" => live.push(program),
-            "post" => recent.push(program),
-            "pre" => upcoming.push(program),
-            _ => {}
-        }
-    }
-
-    SportsView {
-        live,
-        recent,
-        upcoming,
-    }
-}
-
-fn ota_station(network: &str) -> Option<(&'static str, &'static str)> {
-    match normalize_network(network).as_str() {
-        "ABC" => Some(("KVUE", "24.1")),
-        "CBS" => Some(("KEYE", "42.1")),
-        "FOX" => Some(("KTBC", "7.1")),
-        "NBC" => Some(("KXAN", "28.1")),
-        _ => None,
-    }
+pub fn local_sports_view(
+    programs: Vec<Program>,
+    games: &[FootballGame],
+    now_minutes: i32,
+) -> SportsView {
+    // A national network name does not establish local carriage. Only programs
+    // from the Austin guide can become cards; ESPN supplies scores and state.
+    let mut programs = merge_adjacent_programs(programs);
+    enrich_program_scores(&mut programs, games);
+    reconcile_live_overruns(&mut programs, now_minutes);
+    classify_sports(programs, now_minutes)
 }
 
 fn network_for_station(station: &str) -> Option<&'static str> {
@@ -639,9 +610,7 @@ pub fn render_page(view: &SportsView, now_minutes: i32, updated_at: &str) -> Str
     };
 
     let upcoming_cards = view.upcoming.iter().take(8).map(|program| {
-        let when = if let Some(game) = &program.score {
-            game.status.clone()
-        } else if program.start_minutes >= 1440 && now_minutes < 1440 {
+        let when = if program.start_minutes >= 1440 && now_minutes < 1440 {
             format!("Tomorrow at {}", format_clock(program.start_minutes))
         } else {
             format!("Starts at {}", format_clock(program.start_minutes))
@@ -652,7 +621,7 @@ pub fn render_page(view: &SportsView, now_minutes: i32, updated_at: &str) -> Str
             escape_html(&program.station.replace(" HDTV", "")),
             escape_html(&program.channel),
             escape_html(&program.title),
-            when,
+            escape_html(&when),
         )
     }).collect::<Vec<_>>().join("");
 
@@ -690,7 +659,7 @@ header{{display:flex;justify-content:space-between;align-items:center;gap:24px;m
 <section><p class="eyebrow">ON YOUR ANTENNA NOW</p><h1>{headline}</h1><p class="subhead">Live football and baseball on Austin's major over-the-air networks.</p><div class="live-grid">{live_cards}</div></section>
 {recent_section}
 <section><div class="section-head"><h2>Up next</h2><button type="button" onclick="location.reload()">Refresh</button></div>{upcoming_section}</section>
-<footer>Updated {updated_at} Central · Refreshes every 5 minutes<br>Football and baseball broadcasts and scores from ESPN.</footer>
+<footer>Updated {updated_at} Central · Refreshes every 5 minutes<br>Austin antenna listings from On TV Tonight · Scores from ESPN.</footer>
 </main></body></html>"##
     )
 }

@@ -1,6 +1,6 @@
 # Antenna Sports
 
-A tiny Rust dashboard showing live football and baseball games carried by ABC, CBS, FOX, or NBC. It uses ESPN's scoreboard feeds for matchups, broadcast networks, scores, and game state instead of trying to infer live games from a TV-grid schedule.
+A tiny Rust dashboard showing live football and baseball games carried by Austin's ABC, CBS, FOX, or NBC stations for ZIP 78746. On TV Tonight's Austin antenna listings determine which games are available locally; ESPN supplies scores and game state. Regional games on the same national network are not assumed to air in Austin.
 
 The server binds to `127.0.0.1:8790` by design. Put it behind a private reverse proxy such as Tailscale Serve if you want to view it from other devices.
 
@@ -32,7 +32,7 @@ The deployment job expects a self-hosted GitHub Actions runner on the production
 
 ## Data source
 
-Game and broadcast data comes from ESPN's publicly accessible scoreboard endpoints. This project is not affiliated with or endorsed by ESPN, the listed networks, leagues, or teams.
+Local broadcasts and matchups come from On TV Tonight's Austin antenna guide, using a shared locale cookie jar for schedule and airing details. ESPN's publicly accessible scoreboard endpoints supply scores and game state. If the local schedule is unavailable, the page reports an error instead of falling back to the national slate. This project is not affiliated with or endorsed by these providers, the listed networks, leagues, or teams.
 
 ## License
 

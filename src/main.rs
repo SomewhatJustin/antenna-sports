@@ -4,7 +4,8 @@ use std::{
 };
 
 use antenna_sports::{
-    FootballGame, parse_football_scoreboard, render_page, sports_view_from_games,
+    FootballGame, Period, Program, decode_schedule_response, episode_title_for_airing,
+    local_sports_view, parse_football_scoreboard, parse_schedule, periods_around, render_page,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -17,7 +18,7 @@ use axum::{
 use chrono::{Duration as ChronoDuration, Timelike, Utc};
 use chrono_tz::America::Chicago;
 use reqwest::Client;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::{net::TcpListener, sync::RwLock, task::JoinSet};
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
@@ -107,6 +108,7 @@ async fn build_live_page(client: &Client) -> Result<String> {
     let tomorrow = now.date_naive() + ChronoDuration::days(1);
 
     let (
+        programs,
         college_yesterday,
         nfl_yesterday,
         mlb_yesterday,
@@ -117,6 +119,7 @@ async fn build_live_page(client: &Client) -> Result<String> {
         nfl_tomorrow,
         mlb_tomorrow,
     ) = tokio::join!(
+        fetch_local_programs(now.date_naive(), now.hour()),
         fetch_espn_scoreboard(client, yesterday, "football", "college-football", true),
         fetch_espn_scoreboard(client, yesterday, "football", "nfl", false),
         fetch_espn_scoreboard(client, yesterday, "baseball", "mlb", false),
@@ -164,9 +167,101 @@ async fn build_live_page(client: &Client) -> Result<String> {
     });
 
     let now_minutes = (now.hour() * 60 + now.minute()) as i32;
-    let view = sports_view_from_games(games, now_minutes);
+    let view = local_sports_view(programs?, &games, now_minutes);
     let updated_at = now.format("%-I:%M %p").to_string();
     Ok(render_page(&view, now_minutes, &updated_at))
+}
+
+async fn fetch_local_programs(date: chrono::NaiveDate, hour: u32) -> Result<Vec<Program>> {
+    // The provider sets encrypted locale cookies. Detail pages ignore region query
+    // parameters, so they must share this cookie jar with the schedule requests.
+    let client = Client::builder()
+        .user_agent("AntennaSports/0.1 (+private personal TV guide)")
+        .cookie_store(true)
+        .timeout(Duration::from_secs(20))
+        .build()?;
+    let [previous, current, next] = periods_around(date, hour);
+    let (previous, current, next) = tokio::try_join!(
+        fetch_local_period(&client, previous),
+        fetch_local_period(&client, current),
+        fetch_local_period(&client, next),
+    )?;
+    let mut programs = [previous, current, next].concat();
+
+    let urls = programs
+        .iter()
+        .filter_map(|program| program.detail_url.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let mut details = JoinSet::new();
+    for url in urls {
+        let client = client.clone();
+        details.spawn(async move {
+            let result = async {
+                client
+                    .get(&url)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .text()
+                    .await
+            }
+            .await;
+            (url, result)
+        });
+    }
+    while let Some(result) = details.join_next().await {
+        let (url, result) = result.context("join local airing details request")?;
+        match result {
+            Ok(html) => {
+                for program in &mut programs {
+                    if program.detail_url.as_deref() == Some(&url)
+                        && let Some(title) = program
+                            .airing_id
+                            .as_deref()
+                            .and_then(|id| episode_title_for_airing(&html, id))
+                    {
+                        program.title = title;
+                    }
+                }
+            }
+            Err(error) => warn!(%error, %url, "local matchup unavailable; keeping guide title"),
+        }
+    }
+    Ok(programs)
+}
+
+async fn fetch_local_period(client: &Client, period: Period) -> Result<Vec<Program>> {
+    let date = period.date.to_string();
+    let body = client
+        .get("https://www.ontvtonight.com/guide/schedule")
+        .query(&[
+            ("provider", "Y341768466"),
+            ("region", "78746"),
+            ("TVperiod", period.name),
+            ("date", date.as_str()),
+        ])
+        .send()
+        .await
+        .context("request Austin antenna schedule")?
+        .error_for_status()
+        .context("Austin antenna schedule returned an error")?
+        .text()
+        .await?;
+    let mut programs = parse_schedule(&decode_schedule_response(&body)?)?;
+    // Keep the product's football/baseball scope before replacing generic titles
+    // with matchup names from the detail pages.
+    programs.retain(|program| {
+        let title = program.title.to_ascii_lowercase();
+        title.contains("football")
+            || title.contains("nfl")
+            || title.contains("baseball")
+            || title.contains("world series")
+    });
+    for program in &mut programs {
+        program.start_minutes += period.day_offset * 1440;
+        program.end_minutes += period.day_offset * 1440;
+    }
+    Ok(programs)
 }
 
 fn append_games(

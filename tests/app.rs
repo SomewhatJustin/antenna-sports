@@ -130,3 +130,33 @@ fn renders_live_and_upcoming_sports_without_allowing_html_in_titles() {
     assert!(page.contains("Scoreboard &lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(!page.contains("Scoreboard <script>"));
 }
+
+#[test]
+fn merges_overlapping_period_copies_and_relay_channels() {
+    let first = Program {
+        network: "FOX".into(),
+        station: "KTBC HDTV".into(),
+        channel: "7.1".into(),
+        title: "NFL Football".into(),
+        start_minutes: 12 * 60,
+        end_minutes: 15 * 60,
+        detail_url: None,
+        airing_id: Some("airing-1".into()),
+        score: None,
+    };
+    let duplicate = Program {
+        end_minutes: 15 * 60 + 30,
+        channel: "99.1".into(),
+        ..first.clone()
+    };
+    let next_game = Program {
+        start_minutes: 15 * 60 + 30,
+        end_minutes: 18 * 60,
+        airing_id: Some("airing-2".into()),
+        ..first.clone()
+    };
+    let merged = merge_adjacent_programs(vec![first, duplicate, next_game]);
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0].end_minutes, 15 * 60 + 30);
+    assert_eq!(merged[1].airing_id.as_deref(), Some("airing-2"));
+}

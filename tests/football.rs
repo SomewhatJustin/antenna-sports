@@ -1,6 +1,6 @@
 use antenna_sports::{
-    FootballGame, Program, TeamScore, classify_sports, enrich_program_scores,
-    parse_football_scoreboard, reconcile_live_overruns, render_page, sports_view_from_games,
+    FootballGame, Program, TeamScore, classify_sports, enrich_program_scores, local_sports_view,
+    parse_football_scoreboard, reconcile_live_overruns, render_page,
 };
 
 const SCOREBOARD: &str = include_str!("fixtures/espn-football.json");
@@ -164,7 +164,7 @@ fn does_not_mark_a_scheduled_world_series_broadcast_live_before_first_pitch() {
 }
 
 #[test]
-fn builds_the_ota_view_directly_from_espn_games_without_a_tv_guide_match() {
+fn excludes_other_regional_games_on_the_same_network() {
     let mut games = parse_football_scoreboard(SCOREBOARD, true).unwrap();
     games.push(FootballGame {
         away: TeamScore {
@@ -185,16 +185,24 @@ fn builds_the_ota_view_directly_from_espn_games_without_a_tv_guide_match() {
         },
         status: "2:59 - 4th".into(),
         state: "in".into(),
-        network: "ESPNU".into(),
+        network: "CBS".into(),
         sport: "football".into(),
     });
 
-    let view = sports_view_from_games(games, 22 * 60 + 19);
+    let programs = vec![
+        Program {
+            station: "KEYE HDTV".into(),
+            channel: "42.1".into(),
+            ..program("Michigan St at UCLA", "CBS")
+        },
+        program("Indiana at Michigan", "FOX"),
+    ];
+    let view = local_sports_view(programs, &games, 16 * 60 + 30);
 
     assert_eq!(view.live.len(), 1);
     assert_eq!(view.live[0].title, "Michigan St at UCLA");
     assert_eq!(view.live[0].network, "CBS");
-    assert_eq!(view.live[0].station, "KEYE");
+    assert_eq!(view.live[0].station, "KEYE HDTV");
     assert_eq!(view.live[0].channel, "42.1");
     assert_eq!(view.recent.len(), 1);
     assert_eq!(view.recent[0].title, "Indiana at Michigan");
@@ -203,4 +211,37 @@ fn builds_the_ota_view_directly_from_espn_games_without_a_tv_guide_match() {
             .iter()
             .all(|program| program.title != "UTSA at Tulane")
     );
+}
+
+#[test]
+fn never_falls_back_to_national_games_without_a_local_listing() {
+    let games = parse_football_scoreboard(SCOREBOARD, true).unwrap();
+    let view = local_sports_view(vec![], &games, 16 * 60 + 30);
+    assert!(view.live.is_empty());
+    assert!(view.recent.is_empty());
+    assert!(view.upcoming.is_empty());
+}
+
+#[test]
+fn keeps_an_unresolved_local_listing_without_guessing_a_regional_matchup() {
+    let games = parse_football_scoreboard(SCOREBOARD, true).unwrap();
+    let view = local_sports_view(vec![program("College Football", "CBS")], &games, 16 * 60);
+    assert_eq!(view.live.len(), 1);
+    assert_eq!(view.live[0].title, "College Football");
+    assert!(view.live[0].score.is_none());
+}
+
+#[test]
+fn filters_upcoming_games_by_local_carriage_and_uses_central_schedule_times() {
+    let mut games = parse_football_scoreboard(SCOREBOARD, true).unwrap();
+    for game in &mut games {
+        game.state = "pre".into();
+        game.status = "10/24 - 3:30 PM EDT".into();
+    }
+    let view = local_sports_view(vec![program("Michigan St at UCLA", "CBS")], &games, 12 * 60);
+    assert_eq!(view.upcoming.len(), 1);
+    let page = render_page(&view, 12 * 60, "12:00 PM");
+    assert!(page.contains("Starts at 2:30 PM"));
+    assert!(!page.contains("EDT"));
+    assert!(!page.contains("Indiana at Michigan"));
 }
