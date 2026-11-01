@@ -3,8 +3,13 @@ name: CI and deploy
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: Explicitly deploy production after CI
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -15,8 +20,9 @@ concurrency:
 
 jobs:
   ci:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Native ARM64 checks
+    if: github.actor == 'SomewhatJustin' && github.repository == 'SomewhatJustin/antenna-sports' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, macOS, ARM64, antenna-sports]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -24,13 +30,19 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+      - name: Verify native Apple Silicon toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          rustc -vV
+          rustc -vV | grep '^host: aarch64-apple-darwin$'
+          cargo --version
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
   deploy:
     name: Deploy production
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.actor == 'SomewhatJustin' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy == true
     needs: ci
     runs-on: [self-hosted, Linux, X64, antenna-sports-prod]
     timeout-minutes: 20
