@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: antenna-sports-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ci:
@@ -42,7 +42,7 @@ jobs:
 
   deploy:
     name: Deploy production
-    if: github.actor == 'SomewhatJustin' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy == true
+    if: github.actor == 'SomewhatJustin' && github.repository == 'SomewhatJustin/antenna-sports' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy == true))
     needs: ci
     runs-on: [self-hosted, Linux, X64, antenna-sports-prod]
     timeout-minutes: 20
