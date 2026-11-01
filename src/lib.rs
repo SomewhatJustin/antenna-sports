@@ -329,6 +329,9 @@ pub fn reconcile_live_overruns(programs: &mut Vec<Program>, now_minutes: i32) {
         let Some((placeholder_index, placeholder)) =
             programs.iter().enumerate().find(|(_, candidate)| {
                 candidate.network == game_program.network
+                    && candidate.station == game_program.station
+                    && candidate.channel == game_program.channel
+                    && candidate.start_minutes == game_program.end_minutes
                     && candidate.start_minutes <= now_minutes
                     && now_minutes < candidate.end_minutes
                     && candidate.score.is_none()
@@ -443,9 +446,45 @@ pub fn local_sports_view(
     // A national network name does not establish local carriage. Only programs
     // from the Austin guide can become cards; ESPN supplies scores and state.
     let mut programs = merge_adjacent_programs(programs);
+    reconcile_local_slots(&mut programs);
     enrich_program_scores(&mut programs, games);
     reconcile_live_overruns(&mut programs, now_minutes);
     classify_sports(programs, now_minutes)
+}
+
+// Period grids can retain an earlier listing beyond the next local slot.
+// The next scheduled start, not a national game's live state, ends that slot.
+fn reconcile_local_slots(programs: &mut Vec<Program>) {
+    let same_channel = |a: &Program, b: &Program| {
+        a.network == b.network && a.station == b.station && a.channel == b.channel
+    };
+    let original = programs.clone();
+    for program in programs.iter_mut() {
+        if let Some(next_start) = original
+            .iter()
+            .filter(|next| {
+                same_channel(program, next) && next.start_minutes > program.start_minutes
+            })
+            .map(|next| next.start_minutes)
+            .min()
+        {
+            program.end_minutes = program.end_minutes.min(next_start);
+        }
+    }
+    // Equal-start, distinct airings are contradictory guide data. Fail closed:
+    // never arbitrarily pick a regional game or claim both occupy one channel.
+    programs.retain(|program| {
+        let ambiguous = original.iter().any(|other| {
+            same_channel(program, other)
+                && program.start_minutes == other.start_minutes
+                && (program.title != other.title || program.airing_id != other.airing_id)
+        });
+        if ambiguous {
+            tracing::warn!(station = %program.station, channel = %program.channel,
+                start = program.start_minutes, "conflicting local airings omitted");
+        }
+        !ambiguous
+    });
 }
 
 fn network_for_station(station: &str) -> Option<&'static str> {

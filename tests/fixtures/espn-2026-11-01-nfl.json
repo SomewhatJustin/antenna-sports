@@ -1,0 +1,313 @@
+{
+  "events": [
+    {
+      "id": "401873033",
+      "date": "2026-11-01T21:25Z",
+      "status": {
+        "clock": 826.0,
+        "displayClock": "13:46",
+        "period": 2,
+        "type": {
+          "id": "2",
+          "name": "STATUS_IN_PROGRESS",
+          "state": "in",
+          "completed": false,
+          "description": "In Progress",
+          "detail": "13:46 - 2nd Quarter",
+          "shortDetail": "13:46 - 2nd"
+        }
+      },
+      "competitions": [
+        {
+          "competitors": [
+            {
+              "homeAway": "home",
+              "score": "6",
+              "team": {
+                "shortDisplayName": "Broncos",
+                "location": "Denver",
+                "abbreviation": "DEN"
+              }
+            },
+            {
+              "homeAway": "away",
+              "score": "7",
+              "team": {
+                "shortDisplayName": "Chiefs",
+                "location": "Kansas City",
+                "abbreviation": "KC"
+              }
+            }
+          ],
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "CBS"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401873034",
+      "date": "2026-11-01T21:25Z",
+      "status": {
+        "clock": 445.0,
+        "displayClock": "7:25",
+        "period": 2,
+        "type": {
+          "id": "2",
+          "name": "STATUS_IN_PROGRESS",
+          "state": "in",
+          "completed": false,
+          "description": "In Progress",
+          "detail": "7:25 - 2nd Quarter",
+          "shortDetail": "7:25 - 2nd"
+        }
+      },
+      "competitions": [
+        {
+          "competitors": [
+            {
+              "homeAway": "home",
+              "score": "6",
+              "team": {
+                "shortDisplayName": "Dolphins",
+                "location": "Miami",
+                "abbreviation": "MIA"
+              }
+            },
+            {
+              "homeAway": "away",
+              "score": "3",
+              "team": {
+                "shortDisplayName": "Patriots",
+                "location": "New England",
+                "abbreviation": "NE"
+              }
+            }
+          ],
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "CBS"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401873026",
+      "date": "2026-11-01T18:00Z",
+      "status": {
+        "clock": 0.0,
+        "displayClock": "0:00",
+        "period": 4,
+        "type": {
+          "id": "3",
+          "name": "STATUS_FINAL",
+          "state": "post",
+          "completed": true,
+          "description": "Final",
+          "detail": "Final",
+          "shortDetail": "Final"
+        }
+      },
+      "competitions": [
+        {
+          "competitors": [
+            {
+              "homeAway": "home",
+              "score": "36",
+              "winner": true,
+              "team": {
+                "shortDisplayName": "Bills",
+                "location": "Buffalo",
+                "abbreviation": "BUF"
+              }
+            },
+            {
+              "homeAway": "away",
+              "score": "10",
+              "winner": false,
+              "team": {
+                "shortDisplayName": "Ravens",
+                "location": "Baltimore",
+                "abbreviation": "BAL"
+              }
+            }
+          ],
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "CBS"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401873031",
+      "date": "2026-11-01T18:00Z",
+      "status": {
+        "clock": 0.0,
+        "displayClock": "0:00",
+        "period": 5,
+        "type": {
+          "id": "3",
+          "name": "STATUS_FINAL",
+          "state": "post",
+          "completed": true,
+          "description": "Final",
+          "detail": "Final/OT",
+          "shortDetail": "Final/OT",
+          "altDetail": "OT"
+        }
+      },
+      "competitions": [
+        {
+          "competitors": [
+            {
+              "homeAway": "home",
+              "score": "43",
+              "winner": true,
+              "team": {
+                "shortDisplayName": "Bengals",
+                "location": "Cincinnati",
+                "abbreviation": "CIN"
+              }
+            },
+            {
+              "homeAway": "away",
+              "score": "36",
+              "winner": false,
+              "team": {
+                "shortDisplayName": "Titans",
+                "location": "Tennessee",
+                "abbreviation": "TEN"
+              }
+            }
+          ],
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "CBS"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401873027",
+      "date": "2026-11-01T18:00Z",
+      "status": {
+        "clock": 0.0,
+        "displayClock": "0:00",
+        "period": 4,
+        "type": {
+          "id": "3",
+          "name": "STATUS_FINAL",
+          "state": "post",
+          "completed": true,
+          "description": "Final",
+          "detail": "Final",
+          "shortDetail": "Final"
+        }
+      },
+      "competitions": [
+        {
+          "competitors": [
+            {
+              "homeAway": "home",
+              "score": "27",
+              "winner": true,
+              "team": {
+                "shortDisplayName": "Steelers",
+                "location": "Pittsburgh",
+                "abbreviation": "PIT"
+              }
+            },
+            {
+              "homeAway": "away",
+              "score": "6",
+              "winner": false,
+              "team": {
+                "shortDisplayName": "Browns",
+                "location": "Cleveland",
+                "abbreviation": "CLE"
+              }
+            }
+          ],
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "CBS"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401873028",
+      "date": "2026-11-01T18:00Z",
+      "status": {
+        "clock": 0.0,
+        "displayClock": "0:00",
+        "period": 4,
+        "type": {
+          "id": "3",
+          "name": "STATUS_FINAL",
+          "state": "post",
+          "completed": true,
+          "description": "Final",
+          "detail": "Final",
+          "shortDetail": "Final"
+        }
+      },
+      "competitions": [
+        {
+          "competitors": [
+            {
+              "homeAway": "home",
+              "score": "42",
+              "winner": true,
+              "team": {
+                "shortDisplayName": "Jaguars",
+                "location": "Jacksonville",
+                "abbreviation": "JAX"
+              }
+            },
+            {
+              "homeAway": "away",
+              "score": "7",
+              "winner": false,
+              "team": {
+                "shortDisplayName": "Colts",
+                "location": "Indianapolis",
+                "abbreviation": "IND"
+              }
+            }
+          ],
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "CBS"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
