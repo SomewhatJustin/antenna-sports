@@ -1,4 +1,6 @@
 use std::{
+    future::Future,
+    pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -18,16 +20,79 @@ use axum::{
 use chrono::{Duration as ChronoDuration, Timelike, Utc};
 use chrono_tz::America::Chicago;
 use reqwest::Client;
-use tokio::{net::TcpListener, sync::RwLock, task::JoinSet};
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, watch},
+    task::JoinSet,
+};
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
 const PORT: u16 = 8790;
 
+type Loader = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<String>> + Send>> + Send + Sync>;
+type Outcome = Option<std::result::Result<String, String>>;
+
 #[derive(Clone)]
 struct AppState {
-    client: Client,
-    cache: Arc<RwLock<Option<CachedPage>>>,
+    loader: Loader,
+    cache: Arc<Mutex<Cache>>,
+}
+
+#[derive(Default)]
+struct Cache {
+    page: Option<CachedPage>,
+    refresh: Option<watch::Receiver<Outcome>>,
+}
+
+impl AppState {
+    fn new(loader: Loader) -> Self {
+        Self {
+            loader,
+            cache: Arc::new(Mutex::new(Cache::default())),
+        }
+    }
+
+    // Publish the flight under the lock before spawning: all callers join it.
+    async fn flight(&self, retry: bool) -> watch::Receiver<Outcome> {
+        let mut cache = self.cache.lock().await;
+        if let Some(rx) = &cache.refresh {
+            let failed = matches!(&*rx.borrow(), Some(Err(_)));
+            let fresh = cache
+                .page
+                .as_ref()
+                .is_some_and(|p| p.created.elapsed() < Duration::from_secs(120));
+            if rx.borrow().is_none() || fresh || (failed && !retry) {
+                return rx.clone();
+            }
+        }
+        let (tx, rx) = watch::channel(None);
+        cache.refresh = Some(rx.clone());
+        let state = self.clone();
+        tokio::spawn(async move {
+            // A detached worker survives request cancellation; the join also contains panics.
+            let loader = state.loader.clone();
+            let task = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(30), loader()).await
+            });
+            let result = match task.await {
+                Ok(Ok(Ok(html))) => Ok(html),
+                other => {
+                    warn!(?other, "schedule refresh failed");
+                    Err("The schedule source did not answer. Please retry.".to_string())
+                }
+            };
+            let mut cache = state.cache.lock().await;
+            if let Ok(html) = &result {
+                cache.page = Some(CachedPage {
+                    created: Instant::now(),
+                    html: html.clone(),
+                });
+            }
+            tx.send_replace(Some(result));
+        });
+        rx
+    }
 }
 
 struct CachedPage {
@@ -47,13 +112,16 @@ async fn main() -> Result<()> {
         .build()
         .context("build HTTP client")?;
 
-    let state = AppState {
-        client,
-        cache: Arc::new(RwLock::new(None)),
-    };
+    let state = AppState::new(Arc::new(move || {
+        let client = client.clone();
+        Box::pin(async move { build_live_page(&client).await })
+    }));
     let app = Router::new()
         .route("/health", get(health))
         .route("/sports/health", get(health))
+        .route("/sports/refresh", get(refresh).post(retry_refresh))
+        // Tailscale Serve strips the /sports mount prefix.
+        .route("/refresh", get(refresh).post(retry_refresh))
         .fallback(get(index))
         .with_state(state)
         .layer(TraceLayer::new_for_http());
@@ -68,37 +136,105 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn index(State(state): State<AppState>) -> Response {
-    if let Some(html) = cached_page(&state).await {
-        return Html(html).into_response();
-    }
+fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert("cache-control", "no-store".parse().unwrap());
+    response
+}
 
-    match build_live_page(&state.client).await {
-        Ok(html) => {
-            *state.cache.write().await = Some(CachedPage {
-                created: Instant::now(),
-                html: html.clone(),
-            });
-            Html(html).into_response()
+async fn index(State(state): State<AppState>) -> Response {
+    {
+        let cache = state.cache.lock().await;
+        if let Some(page) = &cache.page
+            && page.created.elapsed() < Duration::from_secs(120)
+        {
+            return no_store(Html(page.html.clone()).into_response());
         }
-        Err(error) => {
-            warn!(%error, "schedule refresh failed");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Html(error_page(
-                    "The schedule source did not answer. Try refresh in a minute.",
-                )),
-            )
-                .into_response()
+    }
+    state.flight(false).await;
+    no_store(Html(loading_page()).into_response())
+}
+
+async fn refresh(State(state): State<AppState>) -> Response {
+    refresh_response(state, false).await
+}
+
+async fn retry_refresh(State(state): State<AppState>) -> Response {
+    refresh_response(state, true).await
+}
+
+async fn refresh_response(state: AppState, retry: bool) -> Response {
+    let mut rx = state.flight(retry).await;
+    loop {
+        let outcome = rx.borrow().clone();
+        if let Some(result) = outcome {
+            return no_store(match result {
+                Ok(html) => Html(html).into_response(),
+                Err(message) => (StatusCode::SERVICE_UNAVAILABLE, message).into_response(),
+            });
+        }
+        if rx.changed().await.is_err() {
+            return no_store(
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Refresh interrupted. Please retry.",
+                )
+                    .into_response(),
+            );
         }
     }
 }
 
-async fn cached_page(state: &AppState) -> Option<String> {
-    let cache = state.cache.read().await;
-    cache.as_ref().and_then(|cached| {
-        (cached.created.elapsed() < Duration::from_secs(120)).then(|| cached.html.clone())
-    })
+fn loading_page() -> String {
+    let view = local_sports_view(Vec::new(), &[], 0);
+    let base = render_page(&view, 0, "—");
+    let head = base
+        .split("<body>")
+        .next()
+        .unwrap()
+        .replace("<meta http-equiv=\"refresh\" content=\"300\">", "");
+    format!(
+        r##"{head}<body><main aria-busy="true">
+<header><div class="brand">Antenna Sports</div><div class="location">Austin, TX · 78746<br>ABC · CBS · FOX · NBC</div></header>
+<section><p class="eyebrow">ON YOUR ANTENNA NOW</p><h1>Finding your games.</h1><p class="subhead" id="refresh-status" role="status">Loading live football and baseball on your antenna…</p>
+<div class="live-grid" aria-hidden="true"><div class="card skeleton"></div><div class="card skeleton"></div></div>
+<button id="retry" type="button" hidden>Retry refresh</button><noscript><p>JavaScript is required to load live scores. Reload this page after a moment to see the refreshed schedule.</p></noscript></section></main>
+<style>.refresh-error .live-grid{{display:none}}.skeleton{{min-height:210px;background:linear-gradient(110deg,#141414 25%,#222 45%,#141414 65%);background-size:250% 100%;animation:shimmer 1.6s linear infinite}}[hidden]{{display:none!important}}@keyframes shimmer{{to{{background-position:-250% 0}}}}@media(prefers-reduced-motion:reduce){{.skeleton{{animation:none}}}}</style>
+<script>
+(() => {{
+const retry = document.querySelector('#retry');
+async function load(method) {{
+ retry.hidden = true;
+ const main = document.querySelector('main');
+ main.classList.remove('refresh-error');
+ main.querySelector('h1').textContent = 'Finding your games.';
+ main.setAttribute('aria-busy','true');
+ document.querySelector('#refresh-status').textContent = 'Loading live scores…';
+ const controller = new AbortController();
+ const timeout = setTimeout(() => controller.abort(), 35000);
+ try {{
+  const response = await fetch('/sports/refresh', {{method, cache:'no-store', signal:controller.signal}});
+  if (!response.ok) throw new Error('Schedule refresh failed. Please retry.');
+  const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+  const content = doc.querySelector('main');
+  if (!content) throw new Error('Invalid schedule response. Please retry.');
+  main.replaceWith(content);
+  const autoRefresh = doc.querySelector('meta[http-equiv="refresh"]');
+  if (autoRefresh) document.head.append(autoRefresh);
+ }} catch (error) {{
+  main.classList.add('refresh-error');
+  main.querySelector('h1').textContent = 'Signal lost.';
+  main.setAttribute('aria-busy','false');
+  document.querySelector('#refresh-status').textContent = 'Unable to load the schedule. Please retry.';
+  retry.hidden = false;
+ }} finally {{ clearTimeout(timeout); }}
+}}
+retry.addEventListener('click', () => load('POST'));
+load('GET');
+}})();
+</script></body></html>"##
+    )
 }
 
 async fn build_live_page(client: &Client) -> Result<String> {
@@ -131,6 +267,7 @@ async fn build_live_page(client: &Client) -> Result<String> {
         fetch_espn_scoreboard(client, tomorrow, "baseball", "mlb", false),
     );
 
+    require_available_source(&[college_today.is_ok(), nfl_today.is_ok(), mlb_today.is_ok()])?;
     let mut games = Vec::new();
     append_games(
         &mut games,
@@ -264,6 +401,14 @@ async fn fetch_local_period(client: &Client, period: Period) -> Result<Vec<Progr
     Ok(programs)
 }
 
+fn require_available_source(available: &[bool]) -> Result<()> {
+    anyhow::ensure!(
+        available.iter().any(|ok| *ok),
+        "all current scoreboard sources failed"
+    );
+    Ok(())
+}
+
 fn append_games(
     destination: &mut Vec<FootballGame>,
     result: Result<Vec<FootballGame>>,
@@ -308,8 +453,133 @@ async fn fetch_espn_scoreboard(
     Ok(games)
 }
 
-fn error_page(message: &str) -> String {
-    format!(
-        "<!doctype html><meta name=viewport content='width=device-width'><title>Antenna Sports</title><style>body{{margin:0;background:#050505;color:#f5f5f7;font:17px system-ui;display:grid;place-items:center;min-height:100vh}}main{{max-width:560px;padding:32px}}h1{{font-size:48px;letter-spacing:-.05em;margin:0 0 16px}}p{{color:#a1a1a6;line-height:1.5}}</style><main><h1>Signal lost.</h1><p>{message}</p></main>"
-    )
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Semaphore;
+
+    fn fake() -> (AppState, Arc<AtomicUsize>, Arc<Semaphore>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let (c, g) = (calls.clone(), gate.clone());
+        let state = AppState::new(Arc::new(move || {
+            let (c, g) = (c.clone(), g.clone());
+            Box::pin(async move {
+                let n = c.fetch_add(1, Ordering::SeqCst);
+                g.acquire().await.unwrap().forget();
+                if n == 0 {
+                    anyhow::bail!("fake source unavailable");
+                }
+                Ok("<html><body><main>loaded</main></body></html>".into())
+            })
+        }));
+        (state, calls, gate)
+    }
+
+    #[test]
+    fn rejects_total_source_failure_but_accepts_empty_successful_scoreboards() {
+        assert!(require_available_source(&[false, false, false]).is_err());
+        assert!(require_available_source(&[false, true, false]).is_ok());
+    }
+
+    // Manual browser harness: never compiled into the production binary.
+    #[tokio::test]
+    #[ignore]
+    async fn browser_fixture_server() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = AppState::new(Arc::new(move || {
+            let calls = calls.clone();
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_secs(4)).await;
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    anyhow::bail!("fixture outage");
+                }
+                Ok(render_page(
+                    &local_sports_view(Vec::new(), &[], 0),
+                    0,
+                    "12:00 PM",
+                ))
+            })
+        }));
+        let app = Router::new()
+            .route("/sports/refresh", get(refresh).post(retry_refresh))
+            // Tailscale Serve strips the /sports mount prefix.
+            .route("/refresh", get(refresh).post(retry_refresh))
+            .fallback(get(index))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:18790").await.unwrap();
+        axum::serve(listener, app).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn immediate_shell_deduplicates_survives_disconnect_errors_and_explicit_retry() {
+        let (state, calls, gate) = fake();
+        let response = tokio::time::timeout(Duration::from_secs(1), index(State(state.clone())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("aria-busy=\"true\""));
+        assert!(!body.contains("<meta http-equiv=\"refresh\""));
+        let disconnected = tokio::spawn(refresh(State(state.clone())));
+        tokio::task::yield_now().await;
+        disconnected.abort();
+        let mut visitors = Vec::new();
+        let mut waiters = Vec::new();
+        for _ in 0..10 {
+            visitors.push(tokio::spawn(index(State(state.clone()))));
+            waiters.push(tokio::spawn(refresh(State(state.clone()))));
+        }
+        for visitor in visitors {
+            assert_eq!(visitor.await.unwrap().status(), StatusCode::OK);
+        }
+        assert!(waiters.iter().all(|waiter| !waiter.is_finished()));
+        gate.add_permits(1);
+        for waiter in waiters {
+            let response = waiter.await.unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.headers()["cache-control"], "no-store");
+        }
+        assert_eq!(
+            refresh(State(state.clone())).await.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            refresh(State(state.clone())).await.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let retry = tokio::spawn(retry_refresh(State(state.clone())));
+        tokio::task::yield_now().await;
+        let other = tokio::spawn(refresh(State(state.clone())));
+        gate.add_permits(1);
+        assert_eq!(retry.await.unwrap().status(), StatusCode::OK);
+        assert_eq!(other.await.unwrap().status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let fresh = index(State(state.clone())).await;
+        let body = axum::body::to_bytes(fresh.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8(body.to_vec()).unwrap().contains("loaded"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        state.cache.lock().await.page.as_mut().unwrap().created =
+            Instant::now() - Duration::from_secs(120);
+        let stale = index(State(state.clone())).await;
+        let body = axum::body::to_bytes(stale.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8(body.to_vec())
+                .unwrap()
+                .contains("aria-busy")
+        );
+        gate.add_permits(1);
+        assert_eq!(refresh(State(state.clone())).await.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
 }

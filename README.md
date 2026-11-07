@@ -12,12 +12,25 @@ cargo run --release
 
 Then open `http://127.0.0.1:8790`.
 
+## Loading and refresh behavior
+
+Pages cached for less than 120 seconds are served immediately. When the cache is empty or stale, the server immediately returns the styled Antenna Sports shell with accessible skeleton cards, then JavaScript makes one asynchronous request to `/sports/refresh` and replaces the main content in-place. No frontend dependencies are required. All page and refresh responses use `Cache-Control: no-store`.
+
+Concurrent visitors share one detached refresh task, which continues if a browser disconnects. Refreshes have a 30-second server deadline and a 35-second browser deadline. Failures remain visible without polling or automatic retry; **Retry refresh** explicitly sends a POST to `/sports/refresh`. Concurrent retries join an existing refresh. A successful result starts a new 120-second cache window. The normal cached page retains its existing five-minute refresh behavior; loading/error shells do not auto-reload. Without JavaScript, reload the page after the background refresh completes.
+
 ## Checks
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
+```
+
+The deterministic refresh test uses a semaphore-gated fake loader (no network or sleeps) to cover immediate empty/stale responses, concurrent visitors, disconnected waiters, shared failures, explicit retry, and fresh-cache reuse. An optional test-only browser fixture serves a four-second loading state, an initial failure, then successful retries:
+
+```bash
+cargo test --bin antenna-sports browser_fixture_server -- --ignored --nocapture
+# Open http://127.0.0.1:18790; stop with Ctrl-C.
 ```
 
 ## Production deployment
