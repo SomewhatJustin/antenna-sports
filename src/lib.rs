@@ -436,7 +436,7 @@ fn is_non_game_sports_show(title: &str) -> bool {
         || title.contains("football today")
         || matches!(
             title.trim_start_matches("the "),
-            "nfl today" | "fox nfl sunday"
+            "nfl today" | "fox nfl sunday" | "football night in america"
         )
 }
 

@@ -76,7 +76,11 @@ fn finds_the_specific_matchup_for_an_airing_anchor() {
 #[test]
 fn sunday_studio_shows_are_not_live_or_upcoming_games() {
     let base = parse_schedule(FIXTURE).unwrap().remove(0);
-    for title in ["The NFL Today", "Fox NFL Sunday"] {
+    for title in [
+        "The NFL Today",
+        "Fox NFL Sunday",
+        "Football Night in America",
+    ] {
         let mut program = base.clone();
         program.title = title.to_owned();
         let start = program.start_minutes;
