@@ -20,6 +20,85 @@ fn program(title: &str, network: &str) -> Program {
 }
 
 #[test]
+fn resolves_only_a_unique_upcoming_game_for_the_league_network_and_local_start() {
+    use serde_json::{Value, json};
+    let mut events = serde_json::from_str::<Value>(SCOREBOARD).unwrap()["events"].clone();
+    for event in events.as_array_mut().unwrap() {
+        event["date"] = json!("2026-11-22T20:30Z"); // Tomorrow at 2:30 PM Central
+        event["status"]["type"]["state"] = json!("pre");
+    }
+    let board = |events: &Value, league| {
+        antenna_sports::parse_guide_scoreboard(
+            &json!({"events": events}).to_string(),
+            league,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
+        )
+        .unwrap()
+    };
+    let upcoming = |title, offset, games: &[FootballGame]| {
+        let mut slot = program(title, "CBS");
+        slot.start_minutes += offset;
+        slot.end_minutes += offset;
+        local_sports_view(vec![slot], games, 12 * 60)
+            .upcoming
+            .remove(0)
+            .title
+    };
+    let mut games = board(&events, "college-football");
+    games.extend(board(&events, "nfl"));
+    assert_eq!(
+        upcoming("College Football", 1440, &games),
+        "Michigan St at UCLA"
+    );
+    assert_eq!(upcoming("College Football", 0, &games), "College Football");
+    assert_eq!(
+        upcoming("College Football", 1500, &games),
+        "College Football"
+    );
+    assert_eq!(
+        upcoming("Local A at Local B", 1440, &games),
+        "Local A at Local B"
+    );
+    assert_eq!(upcoming("MLB Baseball", 1440, &games), "MLB Baseball");
+    let mut baseball = events.clone();
+    baseball[1]["competitions"][0]["competitors"][0]["team"]["shortDisplayName"] = json!("Brewers");
+    baseball[1]["competitions"][0]["competitors"][1]["team"]["shortDisplayName"] = json!("Rays");
+    assert_eq!(
+        upcoming("World Series Game 2", 1440, &board(&baseball, "mlb")),
+        "Rays at Brewers"
+    );
+    let mut incomplete = events.clone();
+    incomplete[0]["competitions"][0]["broadcasts"] = json!([]);
+    assert_eq!(
+        upcoming(
+            "College Football",
+            1440,
+            &board(&incomplete, "college-football")
+        ),
+        "College Football"
+    );
+    incomplete[0]["competitions"][0]["broadcasts"] = json!([{"names": ["CBS"]}]);
+    incomplete[0]["date"] = Value::Null;
+    assert_eq!(
+        upcoming(
+            "College Football",
+            1440,
+            &board(&incomplete, "college-football")
+        ),
+        "College Football"
+    );
+    events[0]["competitions"][0]["broadcasts"][0]["names"] = json!(["CBS"]);
+    assert_eq!(
+        upcoming(
+            "College Football",
+            1440,
+            &board(&events, "college-football")
+        ),
+        "College Football"
+    );
+}
+
+#[test]
 fn parses_scores_rankings_and_game_state() {
     let games = parse_football_scoreboard(SCOREBOARD, true).expect("scoreboard should parse");
     let indiana = games
@@ -33,7 +112,7 @@ fn parses_scores_rankings_and_game_state() {
     assert_eq!(indiana.home.rank, None);
     assert_eq!(indiana.status, "Final/OT");
     assert_eq!(indiana.state, "post");
-    assert_eq!(indiana.network, "FOX");
+    assert_eq!(indiana.networks, ["FOX"]);
 }
 
 #[test]
@@ -149,8 +228,9 @@ fn does_not_mark_a_scheduled_world_series_broadcast_live_before_first_pitch() {
         home: team("Brewers"),
         status: "Scheduled".into(),
         state: "pre".into(),
-        network: "FOX".into(),
-        sport: "baseball".into(),
+        networks: vec!["FOX".into()],
+        league: "mlb".into(),
+        start_minutes: None,
     };
     let mut world_series = program("World Series Game 2", "FOX");
     world_series.start_minutes = 18 * 60;
@@ -185,8 +265,9 @@ fn excludes_other_regional_games_on_the_same_network() {
         },
         status: "2:59 - 4th".into(),
         state: "in".into(),
-        network: "CBS".into(),
-        sport: "football".into(),
+        networks: vec!["CBS".into()],
+        league: "college-football".into(),
+        start_minutes: None,
     });
 
     let programs = vec![

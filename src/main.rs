@@ -6,8 +6,8 @@ use std::{
 };
 
 use antenna_sports::{
-    FootballGame, Period, Program, decode_schedule_response, episode_title_for_airing,
-    local_sports_view, parse_football_scoreboard, parse_schedule, periods_around, render_page,
+    FootballGame, Period, Program, apply_airing_detail, decode_schedule_response,
+    local_sports_view, parse_guide_scoreboard, parse_schedule, periods_around, render_page,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -256,15 +256,15 @@ async fn build_live_page(client: &Client) -> Result<String> {
         mlb_tomorrow,
     ) = tokio::join!(
         fetch_local_programs(now.date_naive(), now.hour()),
-        fetch_espn_scoreboard(client, yesterday, "football", "college-football", true),
-        fetch_espn_scoreboard(client, yesterday, "football", "nfl", false),
-        fetch_espn_scoreboard(client, yesterday, "baseball", "mlb", false),
-        fetch_espn_scoreboard(client, today, "football", "college-football", true),
-        fetch_espn_scoreboard(client, today, "football", "nfl", false),
-        fetch_espn_scoreboard(client, today, "baseball", "mlb", false),
-        fetch_espn_scoreboard(client, tomorrow, "football", "college-football", true),
-        fetch_espn_scoreboard(client, tomorrow, "football", "nfl", false),
-        fetch_espn_scoreboard(client, tomorrow, "baseball", "mlb", false),
+        fetch_espn_scoreboard(client, today, yesterday, "football", "college-football"),
+        fetch_espn_scoreboard(client, today, yesterday, "football", "nfl"),
+        fetch_espn_scoreboard(client, today, yesterday, "baseball", "mlb"),
+        fetch_espn_scoreboard(client, today, today, "football", "college-football"),
+        fetch_espn_scoreboard(client, today, today, "football", "nfl"),
+        fetch_espn_scoreboard(client, today, today, "baseball", "mlb"),
+        fetch_espn_scoreboard(client, today, tomorrow, "football", "college-football"),
+        fetch_espn_scoreboard(client, today, tomorrow, "football", "nfl"),
+        fetch_espn_scoreboard(client, today, tomorrow, "baseball", "mlb"),
     );
 
     require_available_source(&[college_today.is_ok(), nfl_today.is_ok(), mlb_today.is_ok()])?;
@@ -291,17 +291,14 @@ async fn build_live_page(client: &Client) -> Result<String> {
 
     games.sort_by_key(|game| {
         (
-            game.sport.clone(),
-            game.network.clone(),
+            game.league.clone(),
+            game.start_minutes,
+            game.networks.clone(),
             game.away.abbreviation.clone(),
             game.home.abbreviation.clone(),
         )
     });
-    games.dedup_by(|left, right| {
-        left.sport == right.sport
-            && left.away.abbreviation == right.away.abbreviation
-            && left.home.abbreviation == right.home.abbreviation
-    });
+    games.dedup();
 
     let now_minutes = (now.hour() * 60 + now.minute()) as i32;
     let view = local_sports_view(programs?, &games, now_minutes);
@@ -351,13 +348,8 @@ async fn fetch_local_programs(date: chrono::NaiveDate, hour: u32) -> Result<Vec<
         match result {
             Ok(html) => {
                 for program in &mut programs {
-                    if program.detail_url.as_deref() == Some(&url)
-                        && let Some(title) = program
-                            .airing_id
-                            .as_deref()
-                            .and_then(|id| episode_title_for_airing(&html, id))
-                    {
-                        program.title = title;
+                    if program.detail_url.as_deref() == Some(&url) {
+                        apply_airing_detail(program, &html);
                     }
                 }
             }
@@ -387,18 +379,28 @@ async fn fetch_local_period(client: &Client, period: Period) -> Result<Vec<Progr
     let mut programs = parse_schedule(&decode_schedule_response(&body)?)?;
     // Keep the product's football/baseball scope before replacing generic titles
     // with matchup names from the detail pages.
-    programs.retain(|program| {
-        let title = program.title.to_ascii_lowercase();
-        title.contains("football")
-            || title.contains("nfl")
-            || title.contains("baseball")
-            || title.contains("world series")
-    });
+    programs.retain(is_supported_listing);
     for program in &mut programs {
         program.start_minutes += period.day_offset * 1440;
         program.end_minutes += period.day_offset * 1440;
     }
     Ok(programs)
+}
+
+fn is_supported_listing(program: &Program) -> bool {
+    let supported = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        name.contains("football")
+            || name.contains("nfl")
+            || name.contains("baseball")
+            || name.contains("world series")
+    };
+    supported(&program.title)
+        || program
+            .detail_url
+            .as_deref()
+            .and_then(|url| url.trim_end_matches('/').rsplit('/').next())
+            .is_some_and(|slug| supported(&slug.replace('-', " ")))
 }
 
 fn require_available_source(available: &[bool]) -> Result<()> {
@@ -428,10 +430,10 @@ fn append_games(
 
 async fn fetch_espn_scoreboard(
     client: &Client,
+    guide_date: chrono::NaiveDate,
     date: chrono::NaiveDate,
     sport: &str,
     league: &str,
-    include_rankings: bool,
 ) -> Result<Vec<FootballGame>> {
     let date = date.format("%Y%m%d").to_string();
     let url = format!("https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard");
@@ -446,11 +448,7 @@ async fn fetch_espn_scoreboard(
         .text()
         .await
         .context("read football scoreboard")?;
-    let mut games = parse_football_scoreboard(&body, include_rankings)?;
-    for game in &mut games {
-        game.sport = sport.to_string();
-    }
-    Ok(games)
+    parse_guide_scoreboard(&body, league, guide_date)
 }
 
 #[cfg(test)]
@@ -458,6 +456,37 @@ mod refresh_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Semaphore;
+
+    #[test]
+    fn episode_details_do_not_relabel_a_studio_show_or_named_game() {
+        let mut slot = parse_schedule(include_str!("../tests/fixtures/afternoon.html"))
+            .unwrap()
+            .into_iter()
+            .find(|p| p.airing_id.as_deref() == Some("airing-276532"))
+            .unwrap();
+        for original in ["College Football Scoreboard", "West at East"] {
+            slot.title = original.into();
+            apply_airing_detail(&mut slot, include_str!("../tests/fixtures/detail.html"));
+            assert_eq!(slot.title, original);
+        }
+        slot.title = "College Football".into();
+        apply_airing_detail(&mut slot, include_str!("../tests/fixtures/detail.html"));
+        assert_eq!(slot.title, "Ohio State at Penn State");
+    }
+
+    #[test]
+    fn named_grid_matchup_keeps_its_sport_from_the_guide_series() {
+        let mut slot = parse_schedule(include_str!("../tests/fixtures/afternoon.html"))
+            .unwrap()
+            .into_iter()
+            .find(|p| p.airing_id.as_deref() == Some("airing-276532"))
+            .unwrap();
+        slot.title = "West at East".into();
+        assert!(is_supported_listing(&slot));
+        slot.detail_url =
+            Some("https://www.ontvtonight.com/guide/listings/123/college-basketball/".into());
+        assert!(!is_supported_listing(&slot));
+    }
 
     fn fake() -> (AppState, Arc<AtomicUsize>, Arc<Semaphore>) {
         let calls = Arc::new(AtomicUsize::new(0));

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use chrono::{Duration, NaiveDate};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Timelike};
+use chrono_tz::America::Chicago;
 use scraper::{Html, Selector};
 use serde::Serialize;
 use serde_json::Value;
@@ -20,8 +21,9 @@ pub struct FootballGame {
     pub home: TeamScore,
     pub status: String,
     pub state: String,
-    pub network: String,
-    pub sport: String,
+    pub networks: Vec<String>,
+    pub league: String,
+    pub start_minutes: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -63,12 +65,16 @@ pub fn parse_schedule(html: &str) -> Result<Vec<Program>> {
         let Some(network) = network_for_station(station) else {
             continue;
         };
-        let channel = channel_link
-            .value()
-            .attr("aria-label")
-            .and_then(|label| label.rsplit_once("channel ").map(|(_, value)| value))
-            .unwrap_or("—")
-            .to_string();
+        let channel = match station {
+            // The Austin guide labels KXAN 28.1; antenna viewers tune to 36.1.
+            "KXAN HDTV" => "36.1",
+            _ => channel_link
+                .value()
+                .attr("aria-label")
+                .and_then(|label| label.rsplit_once("channel ").map(|(_, value)| value))
+                .unwrap_or("—"),
+        }
+        .to_string();
 
         for card in row.select(&sport_selector) {
             let classes = card.value().attr("class").unwrap_or_default();
@@ -143,6 +149,25 @@ pub fn parse_schedule(html: &str) -> Result<Vec<Program>> {
     Ok(programs)
 }
 
+pub fn apply_airing_detail(program: &mut Program, html: &str) {
+    let named_matchup = program.title.split_whitespace().any(|word| {
+        matches!(
+            word.trim_end_matches('.').to_ascii_lowercase().as_str(),
+            "at" | "vs" | "versus" | "@"
+        )
+    });
+    if named_matchup || is_non_game_sports_show(&program.title) {
+        return;
+    }
+    if let Some(title) = program
+        .airing_id
+        .as_deref()
+        .and_then(|id| episode_title_for_airing(html, id))
+    {
+        program.title = title;
+    }
+}
+
 pub fn episode_title_for_airing(html: &str, airing_id: &str) -> Option<String> {
     let document = Html::parse_document(html);
     let airing_selector = Selector::parse(".show-airing").ok()?;
@@ -177,6 +202,31 @@ pub fn episode_title_for_airing(html: &str, airing_id: &str) -> Option<String> {
 }
 
 pub fn parse_football_scoreboard(json: &str, include_rankings: bool) -> Result<Vec<FootballGame>> {
+    parse_scoreboard(
+        json,
+        if include_rankings {
+            "college-football"
+        } else {
+            "nfl"
+        },
+        None,
+    )
+}
+
+pub fn parse_guide_scoreboard(
+    json: &str,
+    league: &str,
+    guide_date: NaiveDate,
+) -> Result<Vec<FootballGame>> {
+    parse_scoreboard(json, league, Some(guide_date))
+}
+
+fn parse_scoreboard(
+    json: &str,
+    league: &str,
+    guide_date: Option<NaiveDate>,
+) -> Result<Vec<FootballGame>> {
+    let include_rankings = league == "college-football";
     let root: Value =
         serde_json::from_str(json).context("football scoreboard returned invalid JSON")?;
     let mut games = Vec::new();
@@ -212,24 +262,42 @@ pub fn parse_football_scoreboard(json: &str, include_rankings: bool) -> Result<V
             .to_string();
         let state = event["status"]["type"]["state"]
             .as_str()
-            .unwrap_or("pre")
+            .unwrap_or("unknown")
             .to_string();
-        let network = competition["broadcasts"]
+        let networks = competition["broadcasts"]
             .as_array()
-            .and_then(|broadcasts| broadcasts.first())
-            .and_then(|broadcast| broadcast["names"].as_array())
-            .and_then(|names| names.first())
-            .and_then(Value::as_str)
+            .into_iter()
+            .flatten()
+            .flat_map(|broadcast| broadcast["names"].as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
             .map(normalize_network)
-            .unwrap_or_default();
+            .collect();
+        let start_minutes = guide_date.and_then(|day| {
+            let raw = competition["date"]
+                .as_str()
+                .or_else(|| event["date"].as_str())?;
+            let utc = DateTime::parse_from_rfc3339(raw)
+                .map(|dt| dt.to_utc())
+                .or_else(|_| {
+                    NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%MZ").map(|dt| dt.and_utc())
+                })
+                .ok()?;
+            let local = utc.with_timezone(&Chicago);
+            i32::try_from(
+                (local.date_naive() - day).num_days() * 1440
+                    + i64::from(local.hour() * 60 + local.minute()),
+            )
+            .ok()
+        });
 
         games.push(FootballGame {
             away,
             home,
             status,
             state,
-            network,
-            sport: "football".to_string(),
+            networks,
+            league: league.to_string(),
+            start_minutes,
         });
     }
 
@@ -241,7 +309,7 @@ pub fn enrich_program_scores(programs: &mut [Program], games: &[FootballGame]) {
         let normalized_title = normalize_words(&program.title);
         let normalized_network = normalize_network(&program.network);
         if let Some(game) = games.iter().find(|game| {
-            (game.network.is_empty() || game.network == normalized_network)
+            (game.networks.is_empty() || game.networks.contains(&normalized_network))
                 && team_appears_in_title(&normalized_title, &game.away)
                 && team_appears_in_title(&normalized_title, &game.home)
         }) {
@@ -251,7 +319,7 @@ pub fn enrich_program_scores(programs: &mut [Program], games: &[FootballGame]) {
         if normalized_title.contains("world series") {
             let matching_network = games
                 .iter()
-                .filter(|game| game.network == normalized_network && game.sport == "baseball")
+                .filter(|game| game.networks.contains(&normalized_network) && game.league == "mlb")
                 .collect::<Vec<_>>();
             if matching_network.len() == 1 {
                 program.score = Some(matching_network[0].clone());
@@ -366,6 +434,10 @@ fn is_non_game_sports_show(title: &str) -> bool {
         || title.contains("kickoff")
         || title.contains("showtime")
         || title.contains("football today")
+        || matches!(
+            title.trim_start_matches("the "),
+            "nfl today" | "fox nfl sunday"
+        )
 }
 
 fn is_overrun_placeholder(title: &str) -> bool {
@@ -428,7 +500,9 @@ pub fn classify_sports(mut programs: Vec<Program>, now_minutes: i32) -> SportsVi
         .collect();
     let upcoming = programs
         .into_iter()
-        .filter(|program| program.start_minutes > now_minutes)
+        .filter(|program| {
+            program.start_minutes > now_minutes && !is_non_game_sports_show(&program.title)
+        })
         .collect();
 
     SportsView {
@@ -449,7 +523,47 @@ pub fn local_sports_view(
     reconcile_local_slots(&mut programs);
     enrich_program_scores(&mut programs, games);
     reconcile_live_overruns(&mut programs, now_minutes);
-    classify_sports(programs, now_minutes)
+    let mut view = classify_sports(programs, now_minutes);
+    for slot in &mut view.upcoming {
+        let Some(league) = generic_game_league(&slot.title) else {
+            continue;
+        };
+        let mut candidates = games.iter().filter(|game| {
+            game.league == league
+                && (game.networks.is_empty() || game.networks.contains(&slot.network))
+                && game
+                    .start_minutes
+                    .is_none_or(|start| start == slot.start_minutes)
+        });
+        if let Some(game) = candidates.next()
+            && candidates.next().is_none()
+            && game.state == "pre"
+            && game.start_minutes.is_some()
+            && game.networks.contains(&slot.network)
+        {
+            slot.title = format!("{} at {}", game.away.name, game.home.name);
+        }
+    }
+    view
+}
+
+fn generic_game_league(title: &str) -> Option<&'static str> {
+    match normalize_words(title).as_str() {
+        "college football" | "ncaa football" => Some("college-football"),
+        "nfl football"
+        | "sunday night football"
+        | "monday night football"
+        | "thursday night football" => Some("nfl"),
+        "mlb baseball" | "major league baseball" | "world series" => Some("mlb"),
+        title
+            if title
+                .strip_prefix("world series game ")
+                .is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7")) =>
+        {
+            Some("mlb")
+        }
+        _ => None,
+    }
 }
 
 // Period grids can retain an earlier listing beyond the next local slot.

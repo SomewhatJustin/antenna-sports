@@ -5,7 +5,7 @@ fn only_the_immediately_preceding_local_game_can_overrun_into_postgame() {
     let mut game = parse_football_scoreboard(include_str!("fixtures/espn-football.json"), true)
         .unwrap()
         .into_iter()
-        .find(|game| game.state == "in" && game.network == "CBS")
+        .find(|game| game.state == "in" && game.networks.iter().any(|network| network == "CBS"))
         .unwrap();
     let first_title = format!("{} at {}", game.away.name, game.home.name);
     let first = listing(&first_title, 720, 900);

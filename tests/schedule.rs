@@ -21,14 +21,20 @@ fn parses_only_the_four_major_austin_broadcast_stations() {
 }
 
 #[test]
+fn kxan_uses_its_austin_virtual_channel() {
+    let programs = parse_schedule(FIXTURE).expect("fixture should parse");
+    let kxan = programs.iter().find(|p| p.station == "KXAN HDTV").unwrap();
+    assert_eq!(kxan.network, "NBC");
+    assert_eq!(kxan.channel, "36.1");
+}
+
+#[test]
 fn identifies_live_and_upcoming_sports_at_430_pm() {
     let programs = parse_schedule(FIXTURE).expect("fixture should parse");
     let view = classify_sports(programs, 16 * 60 + 30);
 
     assert_eq!(view.live.len(), 4);
-    assert_eq!(view.upcoming.len(), 1);
-    assert_eq!(view.upcoming[0].title, "College Football Scoreboard");
-    assert_eq!(view.upcoming[0].start_minutes, 17 * 60 + 30);
+    assert!(view.upcoming.is_empty(), "studio scoreboard is not a game");
     let abc = view
         .live
         .iter()
@@ -65,6 +71,28 @@ fn finds_the_specific_matchup_for_an_airing_anchor() {
         episode_title_for_airing(DETAIL_FIXTURE, "airing-date"),
         None
     );
+}
+
+#[test]
+fn sunday_studio_shows_are_not_live_or_upcoming_games() {
+    let base = parse_schedule(FIXTURE).unwrap().remove(0);
+    for title in ["The NFL Today", "Fox NFL Sunday"] {
+        let mut program = base.clone();
+        program.title = title.to_owned();
+        let start = program.start_minutes;
+        assert!(
+            classify_sports(vec![program.clone()], start)
+                .live
+                .is_empty(),
+            "{title}"
+        );
+        assert!(
+            classify_sports(vec![program], start - 1)
+                .upcoming
+                .is_empty(),
+            "{title}"
+        );
+    }
 }
 
 #[test]
