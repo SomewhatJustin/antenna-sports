@@ -12,6 +12,19 @@ cargo run --release
 
 Then open `http://127.0.0.1:8790`.
 
+## Watch live in Jellyfin
+
+Set any of the following environment variables to the HTTPS URL of that station's channel page in Jellyfin Web. Use the address reachable from the devices that open Antenna Sports. Live cards for configured stations show a **Watch live** link that opens the channel in the browser. Sign in to Jellyfin if prompted, then press **Play**.
+
+| Austin station | Environment variable |
+| --- | --- |
+| FOX KTBC 7.1 | `ANTENNA_SPORTS_JELLYFIN_KTBC_URL` |
+| ABC KVUE 24.1 | `ANTENNA_SPORTS_JELLYFIN_KVUE_URL` |
+| NBC KXAN 36.1 | `ANTENNA_SPORTS_JELLYFIN_KXAN_URL` |
+| CBS KEYE 42.1 | `ANTENNA_SPORTS_JELLYFIN_KEYE_URL` |
+
+For a systemd deployment, set the variables in a user service drop-in and reload the unit before restarting it.
+
 ## Loading and refresh behavior
 
 Pages cached for less than 120 seconds are served immediately. When the cache is empty or stale, the server immediately returns the styled Antenna Sports shell with accessible skeleton cards, then JavaScript makes one asynchronous request to `/sports/refresh` and replaces the main content in-place. No frontend dependencies are required. All page and refresh responses use `Cache-Control: no-store`.

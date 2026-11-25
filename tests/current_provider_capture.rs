@@ -1,6 +1,6 @@
 use antenna_sports::{
     episode_title_for_airing, local_sports_view, parse_football_scoreboard, parse_schedule,
-    render_page,
+    render_page_with_watch_links,
 };
 
 // A real capture from 2026-11-01, not a reconstruction of historical live state.
@@ -32,7 +32,11 @@ fn november_first_capture_shows_only_the_locally_scheduled_cbs_game() {
     assert_eq!(view.live[0].end_minutes, 18 * 60 + 30);
     assert_eq!(view.recent.len(), 1);
     assert_eq!(view.recent[0].title, "Baltimore Ravens at Buffalo Bills");
-    let page = render_page(&view, 16 * 60 + 12, "4:12 PM");
+    let url = "https://jellyfin.example/web/#/details?id=cbs";
+    let links = [("KEYE HDTV", url.parse().unwrap())].into();
+    let page = render_page_with_watch_links(&view, 16 * 60 + 12, "4:12 PM", &links);
+    assert_eq!(page.matches(url).count(), 1);
+    assert!(page.contains("Watch live in Jellyfin — Kansas City Chiefs at Denver Broncos"));
     assert!(!page.contains("Patriots"));
     assert!(!page.contains("Dolphins"));
 }

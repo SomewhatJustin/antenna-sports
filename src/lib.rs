@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Timelike};
 use chrono_tz::America::Chicago;
+use reqwest::Url;
 use scraper::{Html, Selector};
 use serde::Serialize;
 use serde_json::Value;
@@ -731,6 +734,15 @@ pub fn periods_around(date: NaiveDate, hour: u32) -> [Period; 3] {
 }
 
 pub fn render_page(view: &SportsView, now_minutes: i32, updated_at: &str) -> String {
+    render_page_with_watch_links(view, now_minutes, updated_at, &HashMap::new())
+}
+
+pub fn render_page_with_watch_links(
+    view: &SportsView,
+    now_minutes: i32,
+    updated_at: &str,
+    watch_links: &HashMap<&str, Url>,
+) -> String {
     let live_count = view.live.len();
     let headline = match live_count {
         0 => "No sports are on right now".to_string(),
@@ -743,7 +755,9 @@ pub fn render_page(view: &SportsView, now_minutes: i32, updated_at: &str) -> Str
     } else {
         view.live
             .iter()
-            .map(|program| render_current_card(program, false))
+            .map(|program| {
+                render_current_card(program, false, watch_links.get(program.station.as_str()))
+            })
             .collect::<Vec<_>>()
             .join("")
     };
@@ -754,7 +768,7 @@ pub fn render_page(view: &SportsView, now_minutes: i32, updated_at: &str) -> Str
         let cards = view
             .recent
             .iter()
-            .map(|program| render_current_card(program, true))
+            .map(|program| render_current_card(program, true, None))
             .collect::<Vec<_>>()
             .join("");
         format!(
@@ -801,6 +815,7 @@ header{{display:flex;justify-content:space-between;align-items:center;gap:24px;m
 .eyebrow{{color:var(--blue);font-size:14px;font-weight:650;margin:0 0 12px}}h1{{font-size:clamp(42px,8vw,76px);line-height:1.02;letter-spacing:-.055em;max-width:850px;margin:0 0 18px}}.subhead{{color:var(--muted);font-size:17px;line-height:1.45;margin:0 0 36px}}
 .live-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:72px}}.card{{background:var(--surface);border-radius:18px;padding:24px;min-width:0}}.live-card{{min-height:220px;display:flex;flex-direction:column}}.card-top{{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:26px}}.network{{font-size:13px;font-weight:750;color:var(--blue)}}.channel{{font-size:13px;color:var(--muted)}}h2,h3{{margin:0;overflow-wrap:anywhere}}h2{{font-size:clamp(26px,4vw,38px);line-height:1.08;letter-spacing:-.04em}}h3{{font-size:21px;line-height:1.15}}.timing{{margin:auto 0 0;color:var(--muted);font-size:14px;padding-top:28px}}.timing.live{{color:#fff}}.live-dot{{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--live);margin-right:8px;box-shadow:0 0 0 5px rgba(255,69,58,.12)}}
 .scoreboard{{display:grid;gap:12px;margin-top:2px}}.team-row{{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:16px}}.team-name{{font-size:clamp(24px,3.2vw,34px);font-weight:650;letter-spacing:-.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.team-score{{font-size:clamp(30px,4vw,42px);font-weight:700;font-variant-numeric:tabular-nums}}.rank{{display:inline-block;color:var(--muted);font-size:.58em;font-weight:700;min-width:2.1em;vertical-align:.18em}}.game-status{{margin:auto 0 0;padding-top:24px;font-size:14px;font-weight:650;color:#fff}}.game-status.final{{color:var(--muted)}}.recent-section{{margin-top:-24px}}.recent-grid{{margin-bottom:72px}}.muted-eyebrow{{color:var(--muted)}}.section-title{{font-size:30px;margin:0 0 20px}}.sr-only{{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
+.watch-live{{align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;margin-top:16px;padding:8px 16px;border-radius:999px;background:var(--blue);color:var(--bg);font-size:14px;font-weight:700;text-decoration:none}}.watch-live:hover{{background:#66b5ff}}.watch-live:focus-visible{{outline:2px solid var(--blue);outline-offset:3px}}
 .section-head{{display:flex;align-items:end;justify-content:space-between;margin-bottom:20px}}.section-head h2{{font-size:30px}}button{{appearance:none;border:0;background:var(--surface-2);color:var(--text);font:inherit;font-size:14px;padding:10px 16px;border-radius:999px;cursor:pointer}}button:hover{{background:#2a2a2d}}button:focus-visible{{outline:2px solid var(--blue);outline-offset:3px}}
 .upcoming-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}.upcoming-card{{min-height:164px;display:flex;flex-direction:column;background:#101010}}.upcoming-card .card-top{{margin-bottom:22px}}
 .empty{{grid-column:1/-1;background:var(--surface);border-radius:18px;padding:36px;display:flex;flex-direction:column;gap:6px;color:var(--muted)}}.empty strong{{color:var(--text);font-size:21px}}.empty.compact{{padding:24px}}footer{{margin-top:64px;color:#6e6e73;font-size:12px;line-height:1.5}}
@@ -817,13 +832,22 @@ header{{display:flex;justify-content:space-between;align-items:center;gap:24px;m
     )
 }
 
-fn render_current_card(program: &Program, finished: bool) -> String {
+fn render_current_card(program: &Program, finished: bool, watch_url: Option<&Url>) -> String {
     let header = format!(
         "<div class=\"card-top\"><span class=\"network\">{}</span><span class=\"channel\">{} · {}</span></div>",
         escape_html(&program.network),
         escape_html(&program.station.replace(" HDTV", "")),
         escape_html(&program.channel),
     );
+    let watch_link = watch_url
+        .map(|url| {
+            format!(
+                "<a class=\"watch-live\" href=\"{}\" aria-label=\"Watch live in Jellyfin — {}\">Watch live</a>",
+                escape_html(url.as_str()),
+                escape_html(&program.title),
+            )
+        })
+        .unwrap_or_default();
     if let Some(game) = &program.score {
         let status_class = if finished {
             "game-status final"
@@ -836,7 +860,7 @@ fn render_current_card(program: &Program, finished: bool) -> String {
             "<span class=\"live-dot\"></span>".to_string()
         };
         return format!(
-            "<article class=\"card live-card\">{header}<h2 class=\"sr-only\">{}</h2><div class=\"scoreboard\">{}{}</div><p class=\"{status_class}\">{status_prefix}{}</p></article>",
+            "<article class=\"card live-card\">{header}<h2 class=\"sr-only\">{}</h2><div class=\"scoreboard\">{}{}</div><p class=\"{status_class}\">{status_prefix}{}</p>{watch_link}</article>",
             escape_html(&program.title),
             render_team_row(&game.away),
             render_team_row(&game.home),
@@ -853,7 +877,7 @@ fn render_current_card(program: &Program, finished: bool) -> String {
         )
     };
     format!(
-        "<article class=\"card live-card\">{header}<h2>{}</h2><p class=\"timing {}\">{timing}</p></article>",
+        "<article class=\"card live-card\">{header}<h2>{}</h2><p class=\"timing {}\">{timing}</p>{watch_link}</article>",
         escape_html(&program.title),
         if finished { "" } else { "live" },
     )

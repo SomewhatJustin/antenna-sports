@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -8,6 +9,7 @@ use std::{
 use antenna_sports::{
     FootballGame, Period, Program, apply_airing_detail, decode_schedule_response,
     local_sports_view, parse_guide_scoreboard, parse_schedule, periods_around, render_page,
+    render_page_with_watch_links,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -19,7 +21,7 @@ use axum::{
 };
 use chrono::{Duration as ChronoDuration, Timelike, Utc};
 use chrono_tz::America::Chicago;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use tokio::{
     net::TcpListener,
     sync::{Mutex, watch},
@@ -112,9 +114,11 @@ async fn main() -> Result<()> {
         .build()
         .context("build HTTP client")?;
 
+    let watch_links = Arc::new(jellyfin_watch_links());
     let state = AppState::new(Arc::new(move || {
         let client = client.clone();
-        Box::pin(async move { build_live_page(&client).await })
+        let watch_links = watch_links.clone();
+        Box::pin(async move { build_live_page(&client, &watch_links).await })
     }));
     let app = Router::new()
         .route("/health", get(health))
@@ -130,6 +134,33 @@ async fn main() -> Result<()> {
     info!(port = PORT, "Antenna Sports listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn jellyfin_watch_links() -> HashMap<&'static str, Url> {
+    [
+        ("KTBC HDTV", "ANTENNA_SPORTS_JELLYFIN_KTBC_URL"),
+        ("KVUE HDTV", "ANTENNA_SPORTS_JELLYFIN_KVUE_URL"),
+        ("KXAN HDTV", "ANTENNA_SPORTS_JELLYFIN_KXAN_URL"),
+        ("KEYE HDTV", "ANTENNA_SPORTS_JELLYFIN_KEYE_URL"),
+    ]
+    .into_iter()
+    .filter_map(|(station, variable)| {
+        let value = std::env::var(variable).ok()?;
+        match Url::parse(value.trim()) {
+            Ok(url)
+                if url.scheme() == "https"
+                    && url.username().is_empty()
+                    && url.password().is_none() =>
+            {
+                Some((station, url))
+            }
+            _ => {
+                warn!(variable, "ignoring invalid Jellyfin watch URL");
+                None
+            }
+        }
+    })
+    .collect()
 }
 
 async fn health() -> &'static str {
@@ -237,7 +268,7 @@ load('GET');
     )
 }
 
-async fn build_live_page(client: &Client) -> Result<String> {
+async fn build_live_page(client: &Client, watch_links: &HashMap<&str, Url>) -> Result<String> {
     let now = Utc::now().with_timezone(&Chicago);
     let yesterday = now.date_naive() - ChronoDuration::days(1);
     let today = now.date_naive();
@@ -303,7 +334,12 @@ async fn build_live_page(client: &Client) -> Result<String> {
     let now_minutes = (now.hour() * 60 + now.minute()) as i32;
     let view = local_sports_view(programs?, &games, now_minutes);
     let updated_at = now.format("%-I:%M %p").to_string();
-    Ok(render_page(&view, now_minutes, &updated_at))
+    Ok(render_page_with_watch_links(
+        &view,
+        now_minutes,
+        &updated_at,
+        watch_links,
+    ))
 }
 
 async fn fetch_local_programs(date: chrono::NaiveDate, hour: u32) -> Result<Vec<Program>> {

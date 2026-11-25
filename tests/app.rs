@@ -1,7 +1,9 @@
 use antenna_sports::{
     Period, Program, SportsView, merge_adjacent_programs, periods_around, periods_for, render_page,
+    render_page_with_watch_links,
 };
 use chrono::NaiveDate;
+use scraper::{ElementRef, Html, Selector};
 
 #[test]
 fn fetches_afternoon_and_night_for_a_late_afternoon_refresh() {
@@ -129,6 +131,51 @@ fn renders_live_and_upcoming_sports_without_allowing_html_in_titles() {
     assert!(page.contains("Starts at 5:30 PM"));
     assert!(page.contains("Scoreboard &lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(!page.contains("Scoreboard <script>"));
+}
+
+#[test]
+fn watch_links_follow_the_live_cards_station_and_skip_unconfigured_stations() {
+    let game = Program {
+        network: "FOX".into(),
+        station: "KTBC HDTV".into(),
+        channel: "7.1".into(),
+        title: "College Football \"Special\"".into(),
+        start_minutes: 14 * 60 + 30,
+        end_minutes: 18 * 60,
+        detail_url: None,
+        airing_id: None,
+        score: None,
+    };
+    let view = SportsView {
+        live: vec![
+            game.clone(),
+            Program {
+                network: "NBC".into(),
+                station: "KXAN HDTV".into(),
+                channel: "36.1".into(),
+                ..game.clone()
+            },
+        ],
+        recent: vec![game.clone()],
+        upcoming: vec![game],
+    };
+    let url = "https://jellyfin.example/web/#/details?id=fox&serverId=server";
+    let watch_links = [("KTBC HDTV", url.parse().unwrap())].into();
+    let page = render_page_with_watch_links(&view, 16 * 60, "4:00 PM", &watch_links);
+    let document = Html::parse_document(&page);
+    let selector = Selector::parse("a.watch-live").unwrap();
+    let links: Vec<_> = document.select(&selector).collect();
+
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].attr("href"), Some(url));
+    assert_eq!(links[0].text().collect::<String>(), "Watch live");
+    assert_eq!(
+        links[0].attr("aria-label"),
+        Some("Watch live in Jellyfin — College Football \"Special\"")
+    );
+    let card = links[0].parent().and_then(ElementRef::wrap).unwrap();
+    assert!(card.text().any(|text| text.contains("KTBC · 7.1")));
+    assert!(page.contains("?id=fox&amp;serverId=server"));
 }
 
 #[test]
