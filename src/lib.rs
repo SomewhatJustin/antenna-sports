@@ -504,7 +504,9 @@ pub fn classify_sports(mut programs: Vec<Program>, now_minutes: i32) -> SportsVi
     let upcoming = programs
         .into_iter()
         .filter(|program| {
-            program.start_minutes > now_minutes && !is_non_game_sports_show(&program.title)
+            program.start_minutes > now_minutes
+                && program.start_minutes <= now_minutes + 24 * 60
+                && !is_non_game_sports_show(&program.title)
         })
         .collect();
 
@@ -693,44 +695,18 @@ pub fn periods_for(date: NaiveDate, hour: u32) -> [Period; 2] {
     ]
 }
 
-pub fn periods_around(date: NaiveDate, hour: u32) -> [Period; 3] {
+pub fn periods_around(date: NaiveDate, hour: u32) -> [Period; 6] {
     let names = ["Early", "Morning", "Afternoon", "Night"];
-    let current_index = match hour {
-        0..=5 => 0,
-        6..=11 => 1,
-        12..=17 => 2,
-        _ => 3,
-    };
-    let previous_index = (current_index + names.len() - 1) % names.len();
-    let next_index = (current_index + 1) % names.len();
-    let previous_rolls_back = current_index == 0;
-    let next_rolls_forward = current_index == names.len() - 1;
-
-    [
+    // Previous block for overruns, then every block through this time tomorrow.
+    std::array::from_fn(|i| {
+        let block = (hour / 6) as i32 + i as i32 - 1;
+        let day_offset = block.div_euclid(4);
         Period {
-            name: names[previous_index],
-            date: if previous_rolls_back {
-                date - Duration::days(1)
-            } else {
-                date
-            },
-            day_offset: if previous_rolls_back { -1 } else { 0 },
-        },
-        Period {
-            name: names[current_index],
-            date,
-            day_offset: 0,
-        },
-        Period {
-            name: names[next_index],
-            date: if next_rolls_forward {
-                date + Duration::days(1)
-            } else {
-                date
-            },
-            day_offset: i32::from(next_rolls_forward),
-        },
-    ]
+            name: names[block.rem_euclid(4) as usize],
+            date: date + Duration::days(day_offset.into()),
+            day_offset,
+        }
+    })
 }
 
 pub fn render_page(view: &SportsView, now_minutes: i32, updated_at: &str) -> String {
@@ -776,7 +752,7 @@ pub fn render_page_with_watch_links(
         )
     };
 
-    let upcoming_cards = view.upcoming.iter().take(8).map(|program| {
+    let upcoming_cards = view.upcoming.iter().map(|program| {
         let when = if program.start_minutes >= 1440 && now_minutes < 1440 {
             format!("Tomorrow at {}", format_clock(program.start_minutes))
         } else {
@@ -793,7 +769,8 @@ pub fn render_page_with_watch_links(
     }).collect::<Vec<_>>().join("");
 
     let upcoming_section = if upcoming_cards.is_empty() {
-        "<div class=\"empty compact\"><span>No more sports found in the next schedule window.</span></div>".to_string()
+        "<div class=\"empty compact\"><span>No games scheduled in the next 24 hours.</span></div>"
+            .to_string()
     } else {
         format!("<div class=\"upcoming-grid\">{upcoming_cards}</div>")
     };
@@ -826,7 +803,7 @@ header{{display:flex;justify-content:space-between;align-items:center;gap:24px;m
 <header><div class="brand">Antenna Sports</div><div class="location">Austin, TX · 78746<br>ABC · CBS · FOX · NBC</div></header>
 <section><p class="eyebrow">ON YOUR ANTENNA NOW</p><h1>{headline}</h1><p class="subhead">Live football and baseball on Austin's major over-the-air networks.</p><div class="live-grid">{live_cards}</div></section>
 {recent_section}
-<section><div class="section-head"><h2>Up next</h2><button type="button" onclick="location.reload()">Refresh</button></div>{upcoming_section}</section>
+<section><div class="section-head"><h2>Next 24 hours</h2><button type="button" onclick="location.reload()">Refresh</button></div>{upcoming_section}</section>
 <footer>Updated {updated_at} Central · Refreshes every 5 minutes<br>Austin antenna listings from On TV Tonight · Scores from ESPN.</footer>
 </main></body></html>"##
     )

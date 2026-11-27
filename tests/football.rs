@@ -39,7 +39,8 @@ fn resolves_only_a_unique_upcoming_game_for_the_league_network_and_local_start()
         let mut slot = program(title, "CBS");
         slot.start_minutes += offset;
         slot.end_minutes += offset;
-        local_sports_view(vec![slot], games, 12 * 60)
+        let now = slot.start_minutes - 60;
+        local_sports_view(vec![slot], games, now)
             .upcoming
             .remove(0)
             .title

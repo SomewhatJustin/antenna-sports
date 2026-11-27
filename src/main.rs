@@ -350,13 +350,15 @@ async fn fetch_local_programs(date: chrono::NaiveDate, hour: u32) -> Result<Vec<
         .cookie_store(true)
         .timeout(Duration::from_secs(20))
         .build()?;
-    let [previous, current, next] = periods_around(date, hour);
-    let (previous, current, next) = tokio::try_join!(
-        fetch_local_period(&client, previous),
-        fetch_local_period(&client, current),
-        fetch_local_period(&client, next),
-    )?;
-    let mut programs = [previous, current, next].concat();
+    let mut requests = JoinSet::new();
+    for period in periods_around(date, hour) {
+        let client = client.clone();
+        requests.spawn(async move { fetch_local_period(&client, period).await });
+    }
+    let mut programs = Vec::new();
+    while let Some(result) = requests.join_next().await {
+        programs.extend(result.context("join local schedule request")??);
+    }
 
     let urls = programs
         .iter()
